@@ -91,7 +91,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 
   // enroll user-defined boundary condition
   if (mesh_bcs[BoundaryFace::inner_x1] == GetBoundaryFlag("user")) {
-    EnrollUserBoundaryFunction(BoundaryFace::inner_x1, OutflowInner);
+    EnrollUserBoundaryFunction(BoundaryFace::inner_x1, Steady_State_Inner);
   }
   if (mesh_bcs[BoundaryFace::outer_x1] == GetBoundaryFlag("user")) {
     EnrollUserBoundaryFunction(BoundaryFace::outer_x1, Steady_State_Outer);
@@ -281,7 +281,7 @@ void Viscosity(HydroDiffusion *phdif, MeshBlock *pmb, const AthenaArray<Real> &p
   }
 }*/
 
-Real Total_Torque1 (MeshBlock *pmb, int iout) { //planet one torque
+/*Real Total_Torque1 (MeshBlock *pmb, int iout) { //planet one torque
   int is=pmb->is, ie=pmb->ie, js=pmb->js, je=pmb->je, ks=pmb->ks, ke=pmb->ke;
   Real sum_torque1 = 0;
   Real time2 = pmb->pmy_mesh->time;
@@ -329,10 +329,10 @@ Real Total_Torque2 (MeshBlock *pmb, int iout) { //planet two torque
     }
   }
   return sum_torque2;
-}
+}*/
 
-Real Get_Weight(const Real l, const Real r, const Real v) {
-    /*
+/*Real Get_Weight(const Real l, const Real r, const Real v) {
+
     get a weight in [0,1] using the following rule:
     when l<r:
     if v<l: weight = 0
@@ -340,13 +340,13 @@ Real Get_Weight(const Real l, const Real r, const Real v) {
     if v>r: weight = 1
     when l>r:
     switch all >< above
-    */
+  
     Real w = (v-l)/(r-l);
     w = fmin(1.,fmax(0.,w));
     return w;
-}
+}*/
 
-Real Inner_Lindblad_Torque1 (MeshBlock *pmb, int iout) {
+/*Real Inner_Lindblad_Torque1 (MeshBlock *pmb, int iout) {
   int is=pmb->is, ie=pmb->ie, js=pmb->js, je=pmb->je, ks=pmb->ks, ke=pmb->ke;
   Real sum_lindblad_torque_inner1 = 0;
   Real time4= pmb->pmy_mesh->time;
@@ -480,7 +480,7 @@ Real Outer_Lindblad_Torque2 (MeshBlock *pmb, int iout) {
     }
   }
   return sum_lindblad_torque_outer2;
-}
+}*/
 
 
 namespace {
@@ -526,10 +526,10 @@ void Steady_State_Inner(MeshBlock *pmb, Coordinates *pco,
         Real beta = rho0/(pow(r0, dslope));
         Real pressure_0 = gamma * pow(r, pslope+dslope);
         Real surface_density_0 = beta * pow(r, dslope);
-        Real surface_density = rho0 / sqrt(r);
+        Real surface_density = rho0 / r;
         Real pressure = surface_density * (pressure_0/surface_density_0);
         Real v_r = -3.0/2.0 * alpha * pow(scale,2) * sqrt((gm_star)/r);
-        Real v_phi = r * sqrt(1-0.5*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
+        Real v_phi = r * sqrt(1.0 - 11.0/4.0*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
         prim(IDN,k,j,il-i) = surface_density;
         prim(IPR,k,j,il-i) = pressure;
         prim(IVX,k,j,il-i) = v_r;
@@ -539,9 +539,7 @@ void Steady_State_Inner(MeshBlock *pmb, Coordinates *pco,
   }
 }
 
-//----------------------------------------------------------------------------------------
-//! User-defined Boundary and Initial Conditions
-void OutflowInner(MeshBlock *pmb,Coordinates *pco, AthenaArray<Real> &prim, FaceField &b,
+/*void OutflowInner(MeshBlock *pmb,Coordinates *pco, AthenaArray<Real> &prim, FaceField &b,
                  Real time, Real dt,
                  int il, int iu, int jl, int ju, int kl, int ku, int ngh) {
   if (std::strcmp(COORDINATE_SYSTEM, "cylindrical") == 0) {
@@ -567,22 +565,7 @@ void OutflowInner(MeshBlock *pmb,Coordinates *pco, AthenaArray<Real> &prim, Face
       }
     }
   }
-}
-
-void Steady_State_Inner(Meshblock *pmb, Coordinates *pco,
-                    AthenaArray<Real> &prim, Facefield &b,
-                    int il, int iu, int jl, int ju, int kl, int ku, int ngh) {
-  for (int k=kl; k<=ku; ++k) {
-    z = pmb->pcoord->x3v(k);
-    for (int j= jl; j<=ju; ++j) {
-      phi = pmb->pcoord->x2v(j);
-      for (int i=1; i<=ngh; ++i) {
-        r = pmb->pcoord->x1v(iu+i);
-        
-      }
-    }
-  }
-                    }
+}*/
 
 void Steady_State_Outer(MeshBlock *pmb, Coordinates *pco,
                     AthenaArray<Real> &prim, FaceField &b,
@@ -598,10 +581,10 @@ void Steady_State_Outer(MeshBlock *pmb, Coordinates *pco,
         Real beta = rho0/(pow(r0, dslope));
         Real pressure_0 = gamma * pow(r, pslope+dslope);
         Real surface_density_0 = beta * pow(r, dslope);
-        Real surface_density = rho0 / sqrt(r);
+        Real surface_density = rho0 / r;
         Real pressure = surface_density * (pressure_0/surface_density_0);
         Real v_r = -3.0/2.0 * alpha * pow(scale,2) * sqrt((gm_star)/r);
-        Real v_phi = r * sqrt(1-0.5*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
+        Real v_phi = Real v_phi = r * sqrt(1.0 - 11.0/4.0*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
         prim(IDN,k,j,iu+i) = surface_density;
         prim(IPR,k,j,iu+i) = pressure;
         prim(IVX,k,j,iu+i) = v_r;
