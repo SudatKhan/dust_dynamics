@@ -32,7 +32,7 @@ Real gm_star, rstar, r0, rho0, dslope, r_in, r_out, p0_over_r0, pslope, gamma_ga
 } // namespace
 
 // User-defined boundary conditions for disk simulations
-void OutflowInner(MeshBlock *pmb, Coordinates *pco,
+void Steady_State_Inner(MeshBlock *pmb, Coordinates *pco,
                   AthenaArray<Real> &prim, FaceField &b,
                   Real time, Real dt,
                   int il, int iu, int jl, int ju, int kl, int ku, int ngh);
@@ -74,7 +74,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   // Get viscosity parameters and scale ratio
   alpha = pin -> GetOrAddReal("problem", "alpha", 0.0);
   nu_iso = pin -> GetOrAddReal("problem", "nu_iso", 0.0);
-  scale = pin -> GetOrAddReal("hydro", "iso_sound_speed", 0.05);
+  scale = pin -> GetOrAddReal("hydro", "iso_sound_speed", 0.06);
 
   // Get parameters of initial pressure and cooling parameters
   if (NON_BAROTROPIC_EOS) {
@@ -584,7 +584,7 @@ void Steady_State_Outer(MeshBlock *pmb, Coordinates *pco,
         Real surface_density = rho0 / r;
         Real pressure = surface_density * (pressure_0/surface_density_0);
         Real v_r = -3.0/2.0 * alpha * pow(scale,2) * sqrt((gm_star)/r);
-        Real v_phi = Real v_phi = r * sqrt(1.0 - 11.0/4.0*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
+        Real v_phi = r * sqrt(1.0 - 11.0/4.0*pow(scale,2)) * sqrt(gm_star)* sqrt(1 / pow(r,3));
         prim(IDN,k,j,iu+i) = surface_density;
         prim(IPR,k,j,iu+i) = pressure;
         prim(IVX,k,j,iu+i) = v_r;
