@@ -1,0 +1,154 @@
+<comment>
+problem   = Keplerian disk in spherical polar coordinates
+reference = 
+configure = --prob=mp_athena --coord=cylindrical -flux hlle --eos=adiabatic --ndustfluids=1 -mpi -hdf5 --hdf5_path=${HDF5_ROOT}
+
+<job>
+problem_id  = disk      # problem ID: basename of output filenames
+
+<output1>
+file_type   = hdf5       # VTK data dump
+variable    = prim,uov0,uov1      #
+dt          =  15.707963267948966     # time increment between outputs
+
+<output2>
+file_type   = hst       # History data dump
+dt          = 0.0628    # time increment between outputs
+
+<output3>
+file_type	= rst
+dt 		= 628. 
+
+<time>
+cfl_number  = 0.4       # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim        = -1        # cycle limit
+tlim        = 12560.      # time limit
+integrator  = rk2       # time integration algorithm
+sts_integrator = rkl1
+xorder      = 2         # order of spatial reconstruction
+ncycle_out  = 1        # interval for stdout summary info
+ncycle_out_mesh = -1000
+dt_diagnostics = -1
+
+<mesh>
+##for log-grid, square mesh
+##  Nr = ln(R_out/R_in)*Nphi/(2*pi)
+nx1         = 384       # Number of zones in X1-direction
+x1min       = 0.3       # minimum value of X1
+x1max       = 5.0       # maximum value of X1
+ix1_bc      = user      # Inner-X1 boundary condition flag
+ox1_bc      = user      # Outer-X1 boundary condition flag
+## for log-grid, x1rat = (R_out/R_in)**(1./Nr)
+x1rat       = 1.0    	# non-uniform grid ratio
+
+nx3         = 1        # Number of zones in X2-direction
+x3min       = -0.5	#1.3707963267948966    # minimum value of X2
+x3max       =  0.5	#1.7707963267948966    # maximum value of X2
+ix3_bc      = reflecting      # Inner-X2 boundary condition flag
+ox3_bc      = reflecting      # Outer-X2 boundary condition flag
+
+nx2         = 512            # Number of zones in X3-direction
+x2min       = 0.0            # minimum value of X3
+x2max       = 6.2831853071795862  # maximum value of X3
+ix2_bc      = periodic       # Inner-X3 boundary condition flag
+ox2_bc      = periodic       # Outer-X3 boundary condition flag
+
+refinement  = static	#adaptive		#None
+numlevel    = 4
+derefine_count  = 10
+
+<refinement1>
+x1min = 0.93                   #-2*0.058
+x1max = 1.07
+x3min = -0.5	#1.5007963267948965            #-0.01*2/3
+x3max = 0.5	#1.6407963267948966            #+0.058*2/3
+x2min = 3.002920398719666       #-3*058
+x2max = 3.28026490845992
+level = 2
+
+<refinement2>
+x1min = 1.3
+x1max = 1.65
+x2min = 0.0
+x2max = 6.2831853071795862
+level = 2   
+
+<meshblock>
+nx1    =  8
+nx2    =  8
+nx3    =  1
+
+<hydro>
+gamma           = 1.001 # gamma = C_p/C_v
+iso_sound_speed = 0.05        # isothermal sound speed
+dfloor          = 1.e-9
+pfloor          = 1.e-12
+
+<orbital_advection>
+OAorder     = 1   # 0: w/o OA, 1: w/ OA (1st), 2: w/ OA (2nd)
+Omega0      = 1.0 # angular velocity of the system
+
+<problem>
+GM          = 1.0
+r0          = 1.0
+rho0        = 1.0
+p0_over_r0  = 0.0025
+tslope      = -1.0
+dslope      = -1.5	# sigma-power = 1.5
+Isothermal_Flag = true
+mdot_flag	= false
+viscBC_flag     = false
+
+
+M_DISK	    = 4.618e-4		#3D rho: 3.685e-3
+Damping_Flag	= false
+rindamp = 0.6
+routdamp = 2.1
+damping_rate = 50.0
+nu_alpha	= 1e-5
+nu_iso		= 2e-8
+
+##exponential disk
+i_exp_disk	= 0		# 0-no,1:(r/rc)^dslope*exp(-(r/rc)^(2+dslope))
+				# 2: (r/rc)^dslope*(-(2+dslope)/2*((r/rc)^(2+dslope)-1))
+rc_exp_disk	= 4.0
+
+<dust>
+r0_length	= 5.2		#AU
+m_star		= 1.0		#M_SUN
+rho_p		= 1.25		#internal density of dust particle (g/cc)
+#dust_xorder	= 2
+solver_id	= 3		# 0,penetration,1-no-penetration, 2-HLL-nocs, 3-HLL-cs
+Diffusion_Flag	= true		# dust diffusion flag
+Momentum_Diffusion_Flag = true	# momentum diffusion or mass diffusion
+Dust_SoundSpeed_Flag = true	# dust sound speed flag
+drag_method     = 1st-implicit        # The drag integratos, "explicit", "semi-implicit", "1st-implicit" or "2nd-implicit"
+openbc_flag     = false
+DustFeedback_Flag = true
+output_stokesNum = true
+dust_alpha	 = 100.0 	# scaling dust_alpha/gas_alpha
+
+initial_D2G_1 = 1e-2            # dust-to-gas ratio
+Size_1  = 2.0                  # cm, size of the dust
+Hratio_1 = 0.8                  # scaled-height ratio to gas, used only for spherical grid
+
+
+<planets>
+nPlanet	= 1		# number of planets
+planetFix = true
+split_pupdate = false
+refine_factor = 0.6
+TIME_RLS = 1e6
+t0_planet   = 2.0                       #*2*PI
+mass_incr_time = 5.0			#*2*PI
+disk2planet	= 0			# no disk2planet force
+softened_method = 1             # 1: plummer, 2: cubic spline
+softening_pl	= 1		# 1:Rh, 2, Hdisk
+SMF_PL		= 0.5		#0.02		#softening factor *(Rh or H)
+mass0	= 1e-3
+rp0	= 1.0
+phip0   = 1.0				#*PI
+accretion_flag = true
+accretion_time = 0.0
+sink_rad 	= 0.2			# *Rh
+sink_rate	= 1.0			# *Omega(R_p)
