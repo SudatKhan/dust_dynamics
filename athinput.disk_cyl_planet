@@ -1,7 +1,7 @@
 <comment>
 problem   = Keplerian disk in spherical polar coordinates
 reference = 
-configure = --prob=mp_athena --coord=cylindrical -flux hlle --eos=adiabatic --ndustfluids=1 -mpi -hdf5 --hdf5_path=${HDF5_ROOT}
+configure = --prob=mp_athena --coord=cylindrical --flux hlle --eos=adiabatic --ndustfluids=1 -mpi -hdf5 --hdf5_path=${HDF5_ROOT}
 
 <job>
 problem_id  = disk      # problem ID: basename of output filenames
@@ -9,7 +9,7 @@ problem_id  = disk      # problem ID: basename of output filenames
 <output1>
 file_type   = hdf5       # VTK data dump
 variable    = prim,uov0,uov1      #
-dt          =  15.707963267948966     # time increment between outputs
+dt          = 62.831853071795862 	# 15.707963267948966     # time increment between outputs
 
 <output2>
 file_type   = hst       # History data dump
@@ -74,8 +74,8 @@ x2max = 6.2831853071795862
 level = 2   
 
 <meshblock>
-nx1    =  8
-nx2    =  8
+nx1    = 8
+nx2    = 8
 nx3    =  1
 
 <hydro>
@@ -94,7 +94,7 @@ r0          = 1.0
 rho0        = 1.0
 p0_over_r0  = 0.0025
 tslope      = -1.0
-dslope      = -1.5	# sigma-power = 1.5
+dslope      = -1.5	# sigma-power = -1.5
 Isothermal_Flag = true
 mdot_flag	= false
 viscBC_flag     = false
@@ -120,13 +120,14 @@ rho_p		= 1.25		#internal density of dust particle (g/cc)
 #dust_xorder	= 2
 solver_id	= 3		# 0,penetration,1-no-penetration, 2-HLL-nocs, 3-HLL-cs
 Diffusion_Flag	= true		# dust diffusion flag
-Momentum_Diffusion_Flag = true	# momentum diffusion or mass diffusion
+Momentum_Diffusion_Flag = false	# momentum diffusion or mass diffusion
 Dust_SoundSpeed_Flag = true	# dust sound speed flag
 drag_method     = 1st-implicit        # The drag integratos, "explicit", "semi-implicit", "1st-implicit" or "2nd-implicit"
 openbc_flag     = false
 DustFeedback_Flag = true
 output_stokesNum = true
 dust_alpha	 = 100.0 	# scaling dust_alpha/gas_alpha
+dust_diff_correction = true
 
 initial_D2G_1 = 1e-2            # dust-to-gas ratio
 Size_1  = 2.0                  # cm, size of the dust
@@ -145,7 +146,7 @@ disk2planet	= 0			# no disk2planet force
 softened_method = 1             # 1: plummer, 2: cubic spline
 softening_pl	= 1		# 1:Rh, 2, Hdisk
 SMF_PL		= 0.5		#0.02		#softening factor *(Rh or H)
-mass0	= 1e-3
+mass0	= 0.000954588
 rp0	= 1.0
 phip0   = 1.0				#*PI
 accretion_flag = true
