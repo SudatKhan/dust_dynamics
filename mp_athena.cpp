@@ -44,9 +44,8 @@
 #endif
 
 #include <random>
-#include "planet.hpp" 
+#include "../planet.hpp" 
 
-#define DEAD_ZONE
 namespace {
   void GetCylCoord(Coordinates *pco,Real &rad,Real &phi,Real &z,int i,int j,int k);
   Real DenProfileCyl(const Real rad, const Real phi, const Real z);
@@ -205,6 +204,21 @@ namespace {
   Real m_star = 1.0;      //M_sun
   Real den_code2Physi, mdot_code2Physi;
   int my_root_level = 0;
+
+  bool RWI_refine = false;
+  bool RWI_refine_rho = false;
+  bool RWI_refine_pv = false;
+  int  RWI_level = 0;
+  Real RWI_rmin = 1.2;
+  Real RWI_rmax = 1.8;
+  Real RWI_rho  = 2.0;
+  Real RWI_rho0 = 1.0;
+  Real RWI_pv = -0.5;
+  Real RWI_pv0 = -0.5;
+  Real RWI_pv_fac = 1.2;
+  Real RWI_time = 60.;
+  bool RWI_out_pv = false;
+  int iout_pv = 0;
   
 #ifdef NDUSTFLUIDS
   //parameter for dust
@@ -217,9 +231,10 @@ namespace {
   Real floor_d2g = 1e-8;
   Real dust_alpha = 1.0; //scaling factor for dust_alpha
   bool bc_comm_dust = false;
-  DustBcCommTaskList *pdfBcCommlist = nullptr;
   Real time_terminate = 1e10; //time to turminate dust input from outer rmax
   int iout_StNum = 0;
+  bool dustDiffusion_Correction = false;
+  bool dustMom_diffusion = false;
 #endif
   
   
@@ -236,7 +251,8 @@ namespace {
 #ifdef NDUSTFLUIDS
 // User-defined Stopping time
 void MyStoppingTime(MeshBlock *pmb, const Real time, const AthenaArray<Real> &prim,
-		    const AthenaArray<Real> &prim_df, AthenaArray<Real> &stopping_time_array);
+		    const AthenaArray<Real> &prim_df, AthenaArray<Real> &stopping_time_array,
+		    int il, int iu, int jl, int ju, int kl, int ku);
 
 // User-defined dust diffusivity
 void MyDustDiffusivity(DustFluids *pdf, MeshBlock *pmb,
@@ -244,6 +260,8 @@ void MyDustDiffusivity(DustFluids *pdf, MeshBlock *pmb,
 		       const AthenaArray<Real> &stopping_time,
 		       AthenaArray<Real> &nu_dust, AthenaArray<Real> &cs_dust,
 		       int is, int ie, int js, int je, int ks, int ke);
+void ResetDustVelPrim(MeshBlock *pmb, const AthenaArray<Real> &prim,
+		      AthenaArray<Real> &prim_df, AthenaArray<Real> &cons_df);
 #endif
 void LocalIsothermalEOS(MeshBlock *pmb, const Real time, const Real dt,
     const AthenaArray<Real> &prim, 
@@ -281,6 +299,12 @@ void MySource(MeshBlock *pmb, const Real time, const Real dt,
 	      const AthenaArray<Real> &bcc,
 	      AthenaArray<Real> &cons, AthenaArray<Real> &cons_df,
 	      AthenaArray<Real> &cons_s);
+void DustMom_correction(MeshBlock *pmb, const Real time, const Real dt,
+	      const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_df,
+	      const AthenaArray<Real> &prim_s,
+	      AthenaArray<Real> &cons, AthenaArray<Real> &cons_df,
+	      AthenaArray<Real> &cons_s);
+
 // User-defined boundary conditions for disk simulations
 void DiskInnerX1(MeshBlock *pmb, Coordinates *pco, AthenaArray<Real> &prim,
 		 AthenaArray<Real> &prim_df, FaceField &b,
@@ -371,11 +395,123 @@ void MeshBlock::UserWorkInLoop()
   // 	      <<std::endl;
   // }
   	
+#if defined(NDUSTFLUIDS) 
+  //reset the dustfluid for low density region
+  ResetDustVelPrim(this, phydro->w, pdustfluids->df_w,pdustfluids->df_u);
+#endif
+  
+#ifdef INJECT_THIRD
+  //check to see the nplanet is the same in each block
+  if (inject_3rd_flag) {
+    int nPlanet0 = ruser_meshblock_data[0].GetDim2();
+    if (nPlanet0 != nPlanet) {
+      if (gid == 0) {
+	std::cout << "in MeshBlock::UserWorkInLoop(): resize the user array using nPlanet\n";
+      }
+      AthenaArray<Real> force2;
+      force2.NewAthenaArray(nPlanet,nforce_out);
+      ruser_meshblock_data[0].ExchangeAthenaArray(force2);
+
+      // if (nuser_out_var > 0) {
+      // 	user_out_var.DeleteAthenaArray();
+      // 	AllocateUserOutputVariables(nPlanet);
+      // }
+    }
+  }
+#endif
+
+  //output mdot in user_out_var
+  if (mdot_flag) {
+    AthenaArray<Real> &x1flux = phydro->flux[X1DIR];
+    AthenaArray<Real> x1area(ncells1+1);
+    Real dt1 = pmy_mesh->dt;
+    int nruser=0;
+    if (nPlanet > 0) nruser++;
+    for(int k=ks; k<=ke; k++) 
+      for(int j=js; j<=je; j++) {
+	pcoord->Face1Area(k, j, is, ie+1, x1area);      
+	for(int i=is; i<=ie; i++) {
+	  //user_out_var(1,k,j,i) += dt1*x1area(i+1)*user_out_var(0,k,j,i+1);
+	  user_out_var(iout_mdot+1,k,j,i) += dt1*x1area(i+1)*phydro->flux[X1DIR](0,k,j,i+1);
+	}
+      }
+  }
+  	
 }
 
 void MeshBlock::UserWorkBeforeOutput(ParameterInput *pin)
 {
+  if (mdot_flag) {
+    int nruser=0;
+    if (nPlanet > 0) nruser++;
+    if (pmy_mesh->time > 1e-10) {
+      Real time1 = pmy_mesh->time+pmy_mesh->dt - tbeg_amdot + 1e-16;
+      for(int k=ks; k<=ke; k++) 
+	for(int j=js; j<=je; j++) {
+	  for(int i=is; i<=ie; i++) {
+	    user_out_var(iout_mdot,k,j,i) = user_out_var(iout_mdot+1,k,j,i)/time1*M_DISK;
+	  }
+	}
+    } else {
+      AthenaArray<Real> x1area(ncells1+1);
+      for(int k=ks; k<=ke; k++) 
+	for(int j=js; j<=je; j++) {
+	  pcoord->Face1Area(k, j, is, ie+1, x1area); 
+	  for(int i=is; i<=ie; i++) {
+	    user_out_var(iout_mdot,k,j,i) = phydro->u(IM1,k,j,i)*0.5*(x1area(i+1)+x1area(i))*M_DISK;
+	  }
+	}
+    }
+    //rset mdot to zero
+    for(int k=ks; k<=ke; k++) 
+      for(int j=js; j<=je; j++) 
+	for(int i=is; i<=ie; i++) {
+	  user_out_var(iout_mdot+1,k,j,i) = 0.0;
+	}
+    if (lid == pmy_mesh->nblocal-1) tbeg_amdot = pmy_mesh->time;
+  } // end if (mdot_flag)
   
+  if (RWI_out_pv) {
+    OrbitalVelocityFunc &vK = porb->OrbitalVelocity;
+    Real vel_K_ip1 = 0.0;
+    Real vel_K_im1 = 0.0;
+    for(int k=ks; k<=ke; k++) 
+      for(int j=js; j<=je; j++) {
+	for(int i=is; i<=ie; i++) {
+	  Real rad, phi, z;
+	  GetCylCoord(pcoord, rad, phi, z, i, j, k);
+	  if (porb->orbital_advection_defined) {
+	    vel_K_ip1 = vK(porb, pcoord->x1v(i+1),
+			   pcoord->x2v(j), pcoord->x3v(k));
+	    vel_K_im1 = vK(porb, pcoord->x1v(i-1),
+			   pcoord->x2v(j), pcoord->x3v(k));
+	  }
+	  Real vp_ip1 = (phydro->w(idx_vphi, k, j, i+1)+
+			 pcoord->x1v(i+1)*pcoord->h32v(j)*Omega0 +
+			 vel_K_ip1);
+	  Real vp_im1 = (phydro->w(idx_vphi, k, j, i-1)+
+			 pcoord->x1v(i-1)*pcoord->h32v(j)*Omega0 +
+			 vel_K_im1);
+	  Real drvpdr = ((pcoord->x1v(i+1)*vp_ip1 -
+			  pcoord->x1v(i-1)*vp_im1) /
+			 (pcoord->x1v(i+1) - pcoord->x1v(i-1)));
+	  Real dvrdp = 0.0;
+	  if (isCylin) {
+	    dvrdp = ((phydro->w(IM1, k, j+1, i) -
+		      phydro->w(IM1, k, j-1, i)) /
+		     (pcoord->x2v(j+1) - pcoord->x2v(j-1)));
+	  } else {
+	    dvrdp = ((phydro->w(IM1, k+1, j, i) -
+		      phydro->w(IM1, k-1, j, i)) /
+		     (pcoord->x3v(k+1) - pcoord->x3v(k-1)));
+	    drvpdr *= pcoord->h32v(j); //rad/pcoord->x1v(i); //sin(theta)
+	  }
+	  Real pv = (dvrdp - drvpdr) / rad / phydro->w(IDN, k, j, i);
+	    
+	  user_out_var(iout_pv,k,j,i) = pv;
+	}
+      }   
+  }  
   
   if (nPlanet > 0 && lid == 0) {
     //save planet info to mesh restart array
@@ -396,7 +532,23 @@ void MeshBlock::UserWorkBeforeOutput(ParameterInput *pin)
     //write-out user defined output variable-4D array(nvar,nz,ny,nx)
   }
 
+#if defined(NDUSTFLUIDS) 
+  if ((!mdot_flag) && pin->GetOrAddBoolean("dust", "output_stokesNum", false)) {
+    Real inv_sqrt_gm0 = 1.0/std::sqrt(gm0);
+      for(int k=ks; k<=ke; k++) 
+        for(int j=js; j<=je; j++) 
+          for(int i=is; i<=ie; i++) {
+	    Real rad,phi,z;
+	    GetCylCoord(pcoord, rad, phi, z, i, j, k);
+	    Real inv_omega = std::sqrt(rad)*rad*inv_sqrt_gm0;
+	    user_out_var(iout_StNum,k,j,i) = pdustfluids->stopping_time_array(0, k, j, i) / inv_omega;
+	  }
+  }
+#endif
 }
+
+void MyRestartDump(const std::string&);
+void MyRestartRead(AthenaArray<Real> *ruser);
 
 //===================================================================================
 //! \fn void Mesh::InitUserMeshData(ParameterInput *pin)
@@ -527,8 +679,10 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   
     maxSt = pin->GetOrAddReal("dust","maxStokesNum",1e10);
     floor_d2g = pin->GetOrAddReal("dust","floor_d2g",1e-8);
-    bc_comm_dust = pin->GetOrAddBoolean("dust","bc_comm_dust", false);
     time_terminate = pin->GetOrAddReal("dust", "time_terminate", 1e10)*TWO_PI;
+    dustDiffusion_Correction = pin->GetOrAddBoolean("dust","dust_diff_correction", true);
+    dustMom_diffusion = pin->GetOrAddBoolean("dust","Momentum_Diffusion_Flag", false);
+    if (dustMom_diffusion) dustDiffusion_Correction = false;
 
     for (int n=0; n<NDUSTFLUIDS; n++) {
       initial_D2G[n]   = pin->GetReal("dust", "initial_D2G_" + std::to_string(n+1));
@@ -563,6 +717,25 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
     exp_power = pin->GetOrAddReal("problem", "POWER_XI", default_exp_power);
   }
   
+  //RWI parameter
+  RWI_refine = pin->GetOrAddBoolean("problem", "RWI_refine", false);
+  RWI_out_pv = pin->GetOrAddBoolean("problem", "RWI_out_pv", false);
+  if (RWI_refine) {
+    RWI_level = pin->GetInteger("problem", "RWI_level");
+    int maxlevel = pin->GetInteger("mesh", "numlevel") - 1;
+    RWI_level = std::max(maxlevel-1,RWI_level);
+    RWI_rmin = pin->GetReal("problem", "RWI_rmin");
+    RWI_rmax = pin->GetReal("problem", "RWI_rmax");      
+    RWI_rho  = pin->GetOrAddReal("problem", "RWI_rho",2.0);
+    RWI_pv  = pin->GetOrAddReal("problem", "RWI_pv", -0.5);
+    RWI_pv0 = RWI_pv;
+    RWI_pv_fac = pin->GetOrAddReal("problem", "RWI_pv_fac", 1.2);
+    RWI_rho0 = RWI_rho;
+    RWI_time = pin->GetOrAddReal("problem", "RWI_time", 60.)*TWO_PI;
+    RWI_refine_rho = pin->GetOrAddBoolean("problem", "RWI_refine_rho", false);
+    RWI_refine_pv = pin->GetOrAddBoolean("problem", "RWI_refine_pv", false);
+  }
+
   //planet data-----------------------------------------------------
   nPlanet = pin->GetOrAddInteger("planets", "nPlanet",0);
   nPlanet_init = nPlanet;
@@ -658,6 +831,9 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
     }
   }
   
+  //EnrollUserRestartDump(MyRestartDump);
+  //EnrollUserRestartRead(MyRestartRead);
+
   // end of planet data---------------------------------------------------
   //Hill_radius = (std::pow(gmp/gm0*ONE_3RD, ONE_3RD)*rad_planet);
   //softn = pin->GetOrAddReal("problem", "softn", 0.6)*Hill_radius; // softening length of the gravitational potential of planets
@@ -749,6 +925,9 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
 	  << "   dust-to-gas ratio: "<<initial_D2G[0]<<std::endl
 	  << "   Stokes_number for rho=1: " <<Stokes_number[0]<<" "<<maxSt<<std::endl
 	  << "   dust_alpha scaling="<<dust_alpha << std::endl
+	  << "   dust_diffusion_flag="<< pin->GetBoolean("dust", "Diffusion_Flag") << std::endl
+	  << "   dust_momentum_diffusion=" << dustMom_diffusion << std::endl
+	  << "   dustmom_correction=" <<dustDiffusion_Correction<<std::endl
 	  << std::endl;
     }
 #endif
@@ -861,14 +1040,14 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
             int v2_id   = rho_id + idx_vphi;
             int v3_id   = rho_id + idx_vz;
 
-            pdustfluids->df_cons(rho_id, k, j, i) = den_dust[n];
-            pdustfluids->df_cons(v1_id,  k, j, i) = den_dust[n]*vr_dust[n];
-	    pdustfluids->df_cons(v2_id,  k, j, i) = den_dust[n]*vp_dust[n];
-	    pdustfluids->df_cons(v3_id,  k, j, i) = 0.0;
+            pdustfluids->df_u(rho_id, k, j, i) = den_dust[n];
+            pdustfluids->df_u(v1_id,  k, j, i) = den_dust[n]*vr_dust[n];
+	    pdustfluids->df_u(v2_id,  k, j, i) = den_dust[n]*vp_dust[n];
+	    pdustfluids->df_u(v3_id,  k, j, i) = 0.0;
 
 	    //reset regions and floor dust
 	    if (den_dust[n] < 5.0*dffloor || std::abs(z) > nH_init*H_disk(rad)) {
-	      pdustfluids->df_cons(v1_id,  k, j, i) = 0.0;	      
+	      pdustfluids->df_u(v1_id,  k, j, i) = 0.0;	      
 	    }
 	    
 	    if (gid == 0 && k==ks && j==je && i==is) {
@@ -894,7 +1073,212 @@ void MeshBlock::ProblemGenerator(ParameterInput *pin) {
   return;
 }
 
+void MyRestartDump(const std::string& ending) {
+  if (MYID == 0) std::cout<< "calling myrestartDump():"<<ending<<std::endl;
+#ifdef REBOUND
+  if (nPlanet > 0 && MYID == 0) {
+    rebound_dump(ending);
+  }
+#endif
+#if defined(COAGULATION) && defined(NDUSTFLUIDS)
+  if (coag_flag && MYID == 0) {
+    // save dt_coag to the file
+    std::ofstream outf1("coagulation_save_" + ending + ".dat", std::ios::binary);
+    outf1.write(reinterpret_cast<char *>(&dt_coag), sizeof(Real));
+    outf1.close();
+  }
+#endif
 
+#ifdef NDUSTFLUIDS
+  //if (pdfBcCommlist != nullptr) delete pdfBcCommlist;
+#endif
+}
+
+void MyRestartRead(AthenaArray<Real> *ruser_mesh_data) {
+  if (MYID == 0) std::cout<< "calling myrestartRead()"<<std::endl;
+#if defined(COAGULATION) && defined(NDUSTFLUIDS)
+  if (coag_flag) {
+    // read dt_coag from the file
+    std::ifstream outf1("coagulation_save.dat", std::ios::binary);
+    outf1.read(reinterpret_cast<char *>(&dt_coag), sizeof(Real));
+    outf1.close();    
+  }
+#endif
+  
+#ifdef REBOUND
+  if (nPlanet > 0 && fexist("rebound_restart.bin")) {
+    rebound_restart(); // only MYID == 0 does it
+    //possible nPlanet change from merger or kick out of domain
+    if (MYID == 0) {	
+      //reset the planet data using rebound info
+      nPlanet = reb->N-1;
+#if defined(INJECT_THIRD)
+      //the extra planet has not been put in the rebound yet
+      if (restart_time < TIME_RLS_THIRD && (!inject_3rd_flag)) nPlanet++;
+#endif    
+    }
+#ifdef MPI_PARALLEL
+    MPI_Bcast(&nPlanet, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+  } // end of restart read
+#endif
+  if (nPlanet > 0) {
+    const AthenaArray<Real> &force = ruser_mesh_data[0];
+    const AthenaArray<Real> &pinfo = ruser_mesh_data[1];
+    for (int n =0; n<nPlanet; n++) {
+      PS[n].setRad  (pinfo(n,0));
+      PS[n].setTheta(pinfo(n,1));
+      PS[n].setPhi  (pinfo(n,2));
+      PS[n].setVr   (pinfo(n,3));
+      PS[n].setVt   (pinfo(n,4));
+      PS[n].setVp   (pinfo(n,5));
+      PS[n].setMass (pinfo(n,6));
+#ifdef  SOFTENING_MULP
+      if (nPlanet > 1) PS[n].update0(); //update r2, cphi, sphi
+#endif
+      PS[n].updateRoche(); //calculate Hill radius Rh
+      Real redPot0 = softening(PS[n].getRoche(),H_disk(PS[n].getRad()),
+			       PS[n].getRad(),n);
+      PS[n].update(redPot0);
+
+      //assign the torque to planet
+      PS[n].setFr(force(n,0));
+      PS[n].setFt(force(n,1)); //theta-direction
+      PS[n].setFp(force(n,2));
+#ifdef ACCRETION_MDOT
+      //calculate adjusted sink rate
+      if (accretion_flag && accretion_mdot > 0.0 &&PS[n].getMass() >= PS[n].getMass0()) {
+	Real rate1 = force(n,nforce_out-1) / restart_dt * mdot_code2Physi;
+	Real sinkRateAdj = accretion_mdot / std::max(rate1,1e-20);
+	if (new_run_flag) {
+	  new_sink_rate(n) = force(n,3);
+	}
+	if (MYID == 0) std::cout << " restart sink rate adj="<<sinkRateAdj<<" "
+				 << new_sink_rate(n)<<" "<<restart_dt<<" "
+				 <<force(n,nforce_out-1) <<" "<<force(n,3)<<" "<<new_run_flag
+				 <<std::endl;
+	new_sink_rate(n) *= sinkRateAdj;
+      }
+#endif
+    }      
+  }
+#if defined(REBOUND) && defined(INJECT_THIRD)
+  if (inject_3rd_flag) {
+    Real massp = 0.0;   //min using: 10.0;
+    Real rp = 0.0;
+    Real phip = 0.0;
+    Real massb = 0.0;
+    
+    if (rp_3rd > 0.0) {
+      massp = massp_3rd;
+      rp = rp_3rd;
+      phip = phip_3rd;
+    } else {
+      Real ab = 0.0;
+      for (int n=0; n<nPlanet; n++) {
+	massb += PS[n].getMass();
+	massp =std::max(PS[n].getMass(),massp);
+	ab += PS[n].getRad();
+      }
+      ab /= nPlanet;
+      massb /= nPlanet;
+      Real rh_b = std::pow((massb+massp)/3.0, 1./3.0)*ab;
+      Real r0_3 = ab + 1.75*rh_b;
+           
+      Real phip = PI;
+      if (PS[0].getPhi() < 0.5) {
+	phip = 2.0*PI - 0.01;
+      } else {
+	phip = PS[0].getPhi() - 0.5;
+      }
+    }
+    PS.push_back(Planet(massp,rp,phip));
+    nPlanet++;
+    //destroy the old array and re-allocate new array with new nPlanet
+    AthenaArray<Real> &force = ruser_mesh_data[0];
+    AthenaArray<Real> &pinfo = ruser_mesh_data[1];
+
+    AthenaArray<Real> force2, pinfo2;
+    force2.NewAthenaArray(nPlanet,nforce_out);
+    pinfo2.NewAthenaArray(nPlanet,7);
+    if (MYID == 0) {
+      std::cout<<"force2 array dimension:" <<force2.GetDim1()<<" "<<force2.GetDim2()
+	       <<std::endl;
+      std::cout<<"force array dimension:" <<force.GetDim1()<<" "<<force.GetDim2()
+	       <<std::endl;
+    }
+
+    force.ExchangeAthenaArray(force2);
+    pinfo.ExchangeAthenaArray(pinfo2);
+
+    if (MYID == 0) {
+      std::cout<<"after exchange force2 array dimension:" <<force2.GetDim1()<<" "<<force2.GetDim2()
+	       <<std::endl;
+      std::cout<<"force array dimension:" <<force.GetDim1()<<" "<<force.GetDim2()
+	       <<std::endl;
+    }
+
+    int n = nPlanet-1;
+    PS[n].setEcc(0.0); PS[n].setInc(0.0); PS[n].setIdx(n);
+    PS[n].initialize(Omega0, false, nvel_planet); //2-vel
+    PS[n].update0();
+    Real redPot0 = softening(PS[n].getRoche(),H_disk(PS[n].getRad()),
+			     PS[n].getRad(),n);
+    PS[n].update(redPot0);
+
+    if (MYID == 0 && restart_time >= TIME_RLS_THIRD) {
+      struct reb_particle planet={0};
+      planet.hash = n+1;
+      planet.m = PS[n].getMass0();
+      planet.lastcollision = 0;
+      planet.r = star_radius*std::pow(planet.m, 1./3.);
+      if (nvel_planet == 2) {
+	real rp = PS[n].getRad();
+	real vr = PS[n].getVr();
+	real vp = PS[n].getVp();
+	if (!rebound_corotating_frame) vp += Omega0*rp;
+	real cPhi = PS[n].getcPhi();
+	real sPhi = PS[n].getsPhi();
+    
+	planet.x = rp*cPhi;
+	planet.y = rp*sPhi;
+	planet.vx = vr*cPhi - vp*sPhi;
+	planet.vy = vr*sPhi + vp*cPhi;
+
+      } else {
+	real rp = PS[n].getRad();
+	real vr = PS[n].getVr();
+	real vp = PS[n].getVp();
+	real vt = PS[n].getVt();
+	real cPhi = PS[n].getcPhi();
+	real sPhi = PS[n].getsPhi();
+	real cThe = PS[n].getcTht();
+	real sThe = PS[n].getsTht();
+
+	vp += Omega0*(rp*sThe);
+    
+	planet.x = rp*sThe*cPhi;
+	planet.y = rp*sThe*sPhi;
+	planet.z = rp*cThe;
+	planet.vx = vr*sThe*cPhi + vt*cThe*cPhi - vp*sPhi;
+	planet.vy = vr*sThe*sPhi + vt*cThe*sPhi + vp*cPhi;
+	planet.vz = vr*cThe - vt*sThe;
+      }
+
+      std::cout<< "add planet:"<<restart_time<<" "
+	       <<n<<" "<<planet.x<<" "<<planet.y<<" "
+	       << planet.vx<<" "<<planet.vy<<std::endl;
+      reb_add(reb,planet);
+      reb_move_to_hel(reb); //move the coordinate as heliocentric frame
+    } // MYID == 0
+    if (MYID == 0) {
+      std::cout<<"force array dimension:" <<ruser_mesh_data[0].GetDim1()<<" "
+	       <<ruser_mesh_data[0].GetDim2()
+	       <<std::endl;
+    }
+  }  
+#endif
+}
 
 //==================================================================================
 //! \fn void Mesh::UserWorkInLoop()
@@ -926,19 +1310,19 @@ void Mesh::UserWorkInLoop()
 		int v2_id   = rho_id + idx_vphi;
 		int v3_id   = rho_id + idx_vz;
 		const Real gas_rho = pmb->phydro->u(IDN, k, j, i);
-		const Real dust_rho = pmb->pdustfluids->df_cons(rho_id, k, j, i);
-		Real vel = pmb->pdustfluids->df_cons(v1_id, k, j, i) / dust_rho;
+		const Real dust_rho = pmb->pdustfluids->df_u(rho_id, k, j, i);
+		Real vel = pmb->pdustfluids->df_u(v1_id, k, j, i) / dust_rho;
 		maxV3[0] = std::max(maxV3[0], std::abs(vel));
 		if (std::abs(vel) > 100.) std::cout<<"maxvr > 100: "
 						   <<pmb->pcoord->x1v(i)<<" "
 						   << n<<" "
 						   <<gas_rho<<" "
 						   <<dust_rho<<" "
-						   <<pmb->pdustfluids->df_cons(v1_id, k, j, i)
+						   <<pmb->pdustfluids->df_u(v1_id, k, j, i)
 						   <<std::endl;
-		vel = pmb->pdustfluids->df_cons(v2_id, k, j, i) / dust_rho;
+		vel = pmb->pdustfluids->df_u(v2_id, k, j, i) / dust_rho;
 		maxV3[1] = std::max(maxV3[1], std::abs(vel));
-		vel = pmb->pdustfluids->df_cons(v3_id, k, j, i) / dust_rho;
+		vel = pmb->pdustfluids->df_u(v3_id, k, j, i) / dust_rho;
 		maxV3[2] = std::max(maxV3[2], std::abs(vel));	    
 	      }
 	    }
@@ -1089,6 +1473,11 @@ void MeshBlock::InitUserMeshBlockData(ParameterInput *pin)
     tbeg_amdot = pmy_mesh->time;
     inext++;
   }
+  if (RWI_out_pv) {
+    nout++;
+    iout_pv = inext;
+    inext++;
+  }
   
 #if defined(NDUSTFLUIDS)
   if (NDUSTFLUIDS > 0) {
@@ -1115,10 +1504,105 @@ void MeshBlock::InitUserMeshBlockData(ParameterInput *pin)
     if (mdot_flag) nout = std::max(nout,2);
     AllocateUserOutputVariables(nout);
   }
+  
+  if (mdot_flag) {
+    for(int k=ks; k<=ke; k++) 
+      for(int j=js; j<=je; j++) 
+	for(int i=is; i<=ie; i++) {
+	  user_out_var(iout_mdot+1,k,j,i) = 0.0; // save the accumulated mdot for later use
+	}
+  }
 }
 
 
 #ifdef NDUSTFLUIDS
+void DustMom_Correction(MeshBlock *pmb, const Real time, const Real dt, const AthenaArray<Real> &prim,
+    const AthenaArray<Real> &prim_df, const AthenaArray<Real> &prim_s,
+    AthenaArray<Real> &cons, AthenaArray<Real> &cons_df, AthenaArray<Real> &cons_s){
+
+  if (!pmb->pdustfluids->dfdif.dustfluids_diffusion_defined) return;
+  if (pmb->pdustfluids->dfdif.Momentum_Diffusion_Flag) return;	
+  AthenaArray<Real> &x1flux = pmb->pdustfluids->dfdif.dustfluids_diffusion_flux[X1DIR];
+  AthenaArray<Real> &x2flux = pmb->pdustfluids->dfdif.dustfluids_diffusion_flux[X2DIR];
+  AthenaArray<Real> &x3flux = pmb->pdustfluids->dfdif.dustfluids_diffusion_flux[X3DIR];
+    
+  int is = pmb->is; int js = pmb->js; int ks = pmb->ks;
+  int ie = pmb->ie; int je = pmb->je; int ke = pmb->ke;
+
+  AthenaArray<Real> x1area, x2area, x2area_p1, x3area, x3area_p1, vol;
+  int nc = pmb->ncells1;
+  x1area.NewAthenaArray(nc+1);
+  if (pmb->block_size.nx2 > 1) {
+    x2area.NewAthenaArray(nc);
+    x2area_p1.NewAthenaArray(nc);
+    if (pmb->block_size.nx3 > 1) { 
+      x3area.NewAthenaArray(nc);
+      x3area_p1.NewAthenaArray(nc);
+    }
+  }
+  vol.NewAthenaArray(nc);
+
+  //if (pmb->gid == 0) std::cout <<"calling dust-diffusion"<<std::endl;
+  
+  for (int k=ks; k<=ke; ++k) {
+#pragma omp for schedule(static)
+    for (int j=js; j<=je; ++j) {
+#pragma simd
+      // compute all the volume and area here
+      pmb->pcoord->Face1Area(k, j, is, ie+1, x1area);
+      pmb->pcoord->CellVolume(k,j,is,ie,vol);
+      if (pmb->block_size.nx2 > 1) {
+        pmb->pcoord->Face2Area(k, j  , is, ie, x2area   );
+        pmb->pcoord->Face2Area(k, j+1, is, ie, x2area_p1);
+	if (pmb->block_size.nx3 > 1) { 
+          // calculate x3-flux divergence
+          pmb->pcoord->Face3Area(k  , j, is, ie, x3area   );
+          pmb->pcoord->Face3Area(k+1, j, is, ie, x3area_p1);
+	}
+      }
+      for (int i=is; i<=ie; ++i) {
+        for (int n=0; n<NDUSTFLUIDS; ++n) {
+          int dust_id = n;
+          int rho_id  = 4*dust_id;
+	  if (cons_df(rho_id,k,j,i) > 10.0*dffloor) {
+	    if (prim_df(rho_id,k,j,i) / prim(IDN,k,j,i) > floor_d2g &&
+		cons_df(rho_id,k,j,i) / cons(IDN,k,j,i) > floor_d2g) {
+	      int v1_id   = rho_id + 1;
+	      int v2_id   = rho_id + 2;
+	      int v3_id   = rho_id + 3;
+	      Real Fmass = (x1area(i+1)*x1flux(rho_id,k,j,i+1) - x1area(i)*x1flux(rho_id,k,j,i));
+        
+	      if (pmb->block_size.nx2 > 1) {
+		Fmass += (x2area_p1(i)*x2flux(rho_id,k,j+1,i) - x2area(i)*x2flux(rho_id,k,j,i));
+
+		if (pmb->block_size.nx3 > 1) { 
+		  // calculate x3-flux divergence
+		  Fmass += (x3area_p1(i)*x3flux(rho_id,k+1,j,i) - x3area(i)*x3flux(rho_id,k,j,i));
+		}
+	      }
+	      Fmass /= vol(i);
+	      cons_df(v1_id,k,j,i) -=  Fmass*prim_df(v1_id,k,j,i)*dt;
+	      cons_df(v2_id,k,j,i) -=  Fmass*prim_df(v2_id,k,j,i)*dt;
+	      cons_df(v3_id,k,j,i) -=  Fmass*prim_df(v3_id,k,j,i)*dt;
+	    } else {
+	      //follow the gas
+	      cons_df(rho_id+1,k,j,i) = cons_df(rho_id,k,j,i)*cons(IM1,k,j,i)/cons(IDN,k,j,i);
+	      cons_df(rho_id+2,k,j,i) = cons_df(rho_id,k,j,i)*cons(IM2,k,j,i)/cons(IDN,k,j,i);
+	      cons_df(rho_id+3,k,j,i) = cons_df(rho_id,k,j,i)*cons(IM3,k,j,i)/cons(IDN,k,j,i);
+	    }
+	  } else {
+	    cons_df(rho_id,k,j,i) = dffloor;
+	    cons_df(rho_id+1,k,j,i) = 0.0;
+	    cons_df(rho_id+2,k,j,i) = 0.0;
+	    cons_df(rho_id+3,k,j,i) = 0.0;
+	  }
+        }
+      }
+    }
+  }
+  return ;
+}
+
 void MySource(MeshBlock *pmb, const Real time, const Real dt,
 	      const AthenaArray<Real> &prim, const AthenaArray<Real> &prim_df,
 	      const AthenaArray<Real> &prim_s,
@@ -1169,6 +1653,13 @@ void MySource(MeshBlock *pmb, const Real time, const Real dt,
 
   }
   
+#ifdef NDUSTFLUIDS
+  if (NDUSTFLUIDS > 0 && (!STS_ENABLED) && nu_iso > 0.0 &&
+      dustDiffusion_Correction) {
+    DustMom_Correction(pmb, time, dt, prim, prim_df, prim_s, cons, cons_df, cons_s);
+  }
+#endif
+
   if (IsoThermal_Flag && NON_BAROTROPIC_EOS) {
     LocalIsothermalEOS(pmb, time, dt, prim, bcc, cons);
   }
@@ -1393,7 +1884,7 @@ namespace {
 	    Real rhod_sum = 0.0;
 	    if (NDUSTFLUIDS > 0) {
 	      for (int nd=0; nd<NDUSTFLUIDS; ++nd) {
-		rhod_sum += pmb->pdustfluids->df_cons(4*nd,k,j,i);
+		rhod_sum += pmb->pdustfluids->df_u(4*nd,k,j,i);
 	      }
 	    }
 	    rho += rhod_sum;
@@ -1564,7 +2055,7 @@ namespace {
 	    Real rhod_sum = 0.0;
 	    if (NDUSTFLUIDS > 0) {
 	      for (int nd=0; nd<NDUSTFLUIDS; ++nd) {
-		rhod_sum += pmb->pdustfluids->df_cons(4*nd,k,j,i);
+		rhod_sum += pmb->pdustfluids->df_u(4*nd,k,j,i);
 	      }
 	    }
 	    rho += rhod_sum;
@@ -1982,24 +2473,17 @@ namespace {
 
 #ifdef NDUSTFLUIDS
 void MyStoppingTime(MeshBlock *pmb, const Real time, const AthenaArray<Real> &prim,
-    const AthenaArray<Real> &prim_df, AthenaArray<Real> &stopping_time) {
+		    const AthenaArray<Real> &prim_df, AthenaArray<Real> &stopping_time,
+		    int il, int iu, int jl, int ju, int kl, int ku) {
 
   Real inv_sqrt_gm0 = 1.0/std::sqrt(gm0);
-  // include the ghost cell value
-  int jl=pmb->js,ju=pmb->je,kl=pmb->ks,ku=pmb->ke;
-  if (pmb->pmy_mesh->ndim > 1) {
-    jl--; ju++;
-  }
-  if (pmb->pmy_mesh->ndim > 2) {
-    kl--; ku++;
-  }
   
   for (int n=0; n<NDUSTFLUIDS; ++n) {
     int dust_id = n;
     for (int k=kl; k<=ku; ++k) {
       for (int j=jl; j<=ju; ++j) {
 #pragma omp simd
-        for (int i=pmb->is-1; i<=pmb->ie+1; ++i) {
+        for (int i=pmb->is; i<=pmb->ie; ++i) {
 	  Real rad,phi,z;
 	  GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
           //Real &rad = pmb->pcoord->x1v(i);
@@ -2078,6 +2562,118 @@ void MyDustDiffusivity(DustFluids *pdf, MeshBlock *pmb,
   return;
 }
 
+void ResetDustVelPrim(MeshBlock *pmb, const AthenaArray<Real> &prim, AthenaArray<Real> &prim_df,
+		      AthenaArray<Real> &cons_df) {
+
+  OrbitalVelocityFunc &vK = pmb->porb->OrbitalVelocity;
+  Real orb_defined;
+  (pmb->porb->orbital_advection_defined) ? orb_defined = 1.0 : orb_defined = 0.0;
+  
+  Coordinates *pco = pmb->pcoord;
+  int il = pmb->is, iu = pmb->ie;
+  int jl=pmb->js,ju=pmb->je,kl=pmb->ks,ku=pmb->ke;
+ 
+  if (!bc_comm_dust) {
+    // prim-to-cons
+    il = pmb->is - NGHOST; iu = pmb->ie + NGHOST;
+    if (pmb->pmy_mesh->ndim > 1) {
+      jl -= NGHOST; ju += NGHOST;
+    }
+    if (pmb->pmy_mesh->ndim > 2) {
+      kl -= NGHOST; ku += NGHOST;
+    }
+  }
+
+  for (int n=0; n<NDUSTFLUIDS; n++) {
+    int dust_id = n;
+    int rho_id  = 4*dust_id;
+    int v1_id   = rho_id + 1;
+    int v2_id   = rho_id + idx_vphi;
+    int v3_id   = rho_id + idx_vz;
+    int iphi = IM1-1+idx_vphi;
+    for (int k=kl; k<=ku; ++k) {
+      for (int j=jl; j<=ju; ++j) {
+#pragma omp simd
+	for (int i=il; i<=iu; ++i) {
+	  const Real &gas_rho = prim(IDN, k, j, i);
+	  const Real &dust_rho = prim_df(rho_id, k, j, i);
+	  const Real d2g = dust_rho/gas_rho;
+	  if (dust_rho < 10.0*dffloor) {
+	    // reset to the initial value
+	    Real rad,phi,z;
+	    GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
+	    Real vel_K = 0.0;
+	    if (pmb->porb->orbital_advection_defined) {
+	      vel_K = vK(pmb->porb, pco->x1v(i), pco->x2v(j), pco->x3v(k));
+	    }
+	    const Real vp_d = VelProfileCyl_dust(rad, phi, z) - vel_K;
+	    prim_df(rho_id, k, j, i) = dffloor;
+	    prim_df(v1_id,  k, j, i) = prim(IM1, k, j, i);  //gas
+	    prim_df(v2_id,  k, j, i) = vp_d;
+	    prim_df(v3_id,  k, j, i) = 0.0;;
+	  } else if (d2g < floor_d2g) {
+	    prim_df(rho_id + 1,  k, j, i) = prim(IM1, k, j, i);
+	    prim_df(rho_id + 2,  k, j, i) = prim(IM2, k, j, i);
+	    prim_df(rho_id + 3,  k, j, i) = prim(IM3, k, j, i); 
+	  } else {
+	    //check the dust velocity
+	    //check vphi first
+	    // first get vphi in the inertial frame
+	    
+	    // Real rad,phi,z;
+	    // GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
+	    // Real vel_K = 0.0;
+	    // if (pmb->porb->orbital_advection_defined) {
+	    //   vel_K = vK(pmb->porb, pco->x1v(i), pco->x2v(j), pco->x3v(k));
+	    // }
+	    // const Real vphid = prim_df(v2_id,  k, j, i) + rad*Omega0 + vel_K;
+	    // const Real vphi  = prim(iphi, k, j, i)      + rad*Omega0 + vel_K;
+
+	    // Real vphid_new = std::min(1.1*vphi, std::max(0.9*vphi, vphid));
+	    // prim_df(v2_id,  k, j, i) = vphid_new - (rad*Omega0 + vel_K);
+	    
+	    // //limit by the gas velocity vr
+	    // if (std::abs(prim_df(v1_id,  k, j, i)) > 4.0*std::abs(prim(IM1, k, j, i))) {
+	    //   //assign center of mass velocity
+	    //   Real v_cm = ((prim(IM1, k, j, i)*gas_rho +  prim_df(v1_id,  k, j, i)*dust_rho) /
+	    // 		   (gas_rho + dust_rho));
+	    //   prim_df(v1_id,  k, j, i) = v_cm;
+	    //   // prim_df(v1_id,  k, j, i) = (4.0*std::abs(prim(IM1, k, j, i))*
+	    //   // 				  (prim_df(v1_id,  k, j, i) > 0.0?1.0:-1.0));
+
+	    //   //vphi
+	    //   // Real vp_cm = ((prim(iphi, k, j, i)*gas_rho +  prim_df(v2_id,  k, j, i)*dust_rho) /
+	    //   // 		    (gas_rho + dust_rho));
+	    //   // prim_df(v2_id,  k, j, i) = vp_cm;
+	    // }
+	      
+	    // if (vphid < 0.5*vphi || vphid > 1.5*vphi) {
+	    //   if (std::abs(prim_df(v1_id,  k, j, i)) > 4.0*std::abs(prim(IM1, k, j, i))) {
+	    // 	prim_df(v1_id,  k, j, i) = (4.0*std::abs(prim(IM1, k, j, i))*
+	    // 				    (prim_df(v1_id,  k, j, i) > 0.0?1.0:-1.0));
+	    //   }
+	    // }
+	    
+	    // //limit vphi
+	    // if (std::abs(prim_df(v2_id,  k, j, i)) > 2.0*std::abs(prim(iphi, k, j, i))) {
+	    //   prim_df(v2_id,  k, j, i) = (2.0*std::abs(prim(iphi, k, j, i))*
+	    // 				  (prim_df(v2_id,  k, j, i) > 0.0?1.0:-1.0));
+	    // }
+	    
+
+	  }
+	}
+      }
+    }
+  }
+  
+  //commnuication between boundary
+  if (!bc_comm_dust) {
+    pmb->peos->DustFluidsPrimitiveToConserved(prim_df, pmb->pdustfluids->dfccdif.diff_mom_cc,
+					      cons_df, pco, il,iu,jl,ju,kl,ku);
+  }
+	     
+}
  
 #endif
 
@@ -2677,10 +3273,10 @@ void LocalIsothermalEOS(MeshBlock *pmb, const Real time, const Real dt,
             int v1_id   = rho_id + 1;
             int v2_id   = rho_id + idx_vphi;
             int v3_id   = rho_id + idx_vz;
-	    pmb->pdustfluids->df_cons(rho_id, k, j, i) = dffloor;
-	    pmb->pdustfluids->df_cons(v1_id,  k, j, i) = 0.0;
-	    pmb->pdustfluids->df_cons(v2_id,  k, j, i) = 0.0;  //vp_d;
-	    pmb->pdustfluids->df_cons(v3_id,  k, j, i) = 0.0;
+	    pmb->pdustfluids->df_u(rho_id, k, j, i) = dffloor;
+	    pmb->pdustfluids->df_u(v1_id,  k, j, i) = 0.0;
+	    pmb->pdustfluids->df_u(v2_id,  k, j, i) = 0.0;  //vp_d;
+	    pmb->pdustfluids->df_u(v3_id,  k, j, i) = 0.0;
 	  }
 #endif
 	//dust
@@ -2707,10 +3303,10 @@ void LocalIsothermalEOS(MeshBlock *pmb, const Real time, const Real dt,
             int v1_id   = rho_id + 1;
             int v2_id   = rho_id + idx_vphi;
             int v3_id   = rho_id + idx_vz;
-	    if (pmb->pdustfluids->df_cons(rho_id, k, j, i) < 10.0*dffloor) {
-	      pmb->pdustfluids->df_cons(v1_id,  k, j, i) = 0.0;
-	      pmb->pdustfluids->df_cons(v2_id,  k, j, i) = 0.0;  //vp_d;
-	      pmb->pdustfluids->df_cons(v3_id,  k, j, i) = 0.0;
+	    if (pmb->pdustfluids->df_u(rho_id, k, j, i) < 10.0*dffloor) {
+	      pmb->pdustfluids->df_u(v1_id,  k, j, i) = 0.0;
+	      pmb->pdustfluids->df_u(v2_id,  k, j, i) = 0.0;  //vp_d;
+	      pmb->pdustfluids->df_u(v3_id,  k, j, i) = 0.0;
 	    }
 	  }
 #endif
@@ -3450,6 +4046,90 @@ int RefinementCondition(MeshBlock *pmb)
     largeDist = largeDist & (minscalar > 2.5*cs_p);
   }
 
+  //refinement based on vortex
+  if (RWI_refine && pmb->pmy_mesh->time < RWI_time) {
+    Real minzoh = 50.0;
+    Real maxrho = 0.0;
+    Real maxpv = -1e6;
+    OrbitalVelocityFunc &vK = pmb->porb->OrbitalVelocity;
+    Real vel_K_ip1 = 0.0;
+    Real vel_K_im1 = 0.0;
+    for (int k=pmb->ks; k<=pmb->ke; ++k) 
+      for (int j=pmb->js; j<=pmb->je; ++j) {
+#pragma omp simd
+	for (int i=pmb->is; i<=pmb->ie; ++i) {
+	  Real rad, phi, z;
+	  GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
+	  if (rad > RWI_rmin && rad < RWI_rmax) {
+	    minzoh = std::min(minzoh, std::abs(z)/H_disk(rad));
+	    const Real &gas_rho = pmb->phydro->w(IDN, k, j, i);
+	    //maxrho = std::max(maxrho, gas_rho/std::pow(rad,dslope));
+	    maxrho = std::max(maxrho, gas_rho);
+	    if (RWI_refine_pv) {
+	      //calculate potential vorticy
+	      if (pmb->porb->orbital_advection_defined) {
+		vel_K_ip1 = vK(pmb->porb, pmb->pcoord->x1v(i+1),
+			   pmb->pcoord->x2v(j), pmb->pcoord->x3v(k));
+		vel_K_im1 = vK(pmb->porb, pmb->pcoord->x1v(i+1),
+			   pmb->pcoord->x2v(j), pmb->pcoord->x3v(k));
+	      }
+	      Real vp_ip1 = (pmb->phydro->w(idx_vphi, k, j, i+1)+
+			     pmb->pcoord->x1v(i+1)*pmb->pcoord->h32v(j)*Omega0 +
+			     vel_K_ip1);
+	      Real vp_im1 = (pmb->phydro->w(idx_vphi, k, j, i-1)+
+			     pmb->pcoord->x1v(i-1)*pmb->pcoord->h32v(j)*Omega0 +
+			     vel_K_im1);
+	      Real drvpdr = ((pmb->pcoord->x1v(i+1)*vp_ip1 -
+			      pmb->pcoord->x1v(i-1)*vp_im1) /
+			     (pmb->pcoord->x1v(i+1) - pmb->pcoord->x1v(i-1)));
+	      Real dvrdp = 0.0;
+	      if (isCylin) {
+		dvrdp = ((pmb->phydro->w(IM1, k, j+1, i) -
+			  pmb->phydro->w(IM1, k, j-1, i)) /
+			 (pmb->pcoord->x2v(j+1) - pmb->pcoord->x2v(j-1)));
+	      } else {
+		dvrdp = ((pmb->phydro->w(IM1, k+1, j, i) -
+			  pmb->phydro->w(IM1, k-1, j, i)) /
+			 (pmb->pcoord->x3v(k+1) - pmb->pcoord->x3v(k-1)));
+		drvpdr *= pmb->pcoord->h32v(j); //rad/pmb->pcoord->x1v(i); //sin(theta)
+	      }
+	      Real pv = (dvrdp - drvpdr) / rad / gas_rho;
+	      maxpv = std::max(maxpv, pv);
+	    }
+	  }
+	}
+      }
+    if (RWI_refine_rho && maxrho > RWI_rho) {//vortex region
+      if (level < RWI_level+1) {
+	return 1;
+      } else if (level == RWI_level+1) {
+	return 0;
+      } else {
+	return -1;
+      }
+    }
+
+    if (RWI_refine_pv && maxpv > RWI_pv) {//vortex region
+      if (level < RWI_level+1) {
+	return 1;
+      } else if (level == RWI_level+1) {
+	return 0;
+      } else {
+	return -1;
+      }
+    }      
+
+    if (minzoh < 1.0) { //1 scaled height
+      if (level < RWI_level) {
+	return 1;
+      } else if (level == RWI_level) {
+	return 0;
+      } else {
+	return -1;
+      }
+    }
+
+  }
     
   if (largeDist) return -1;
   return 0;
