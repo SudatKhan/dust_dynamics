@@ -723,7 +723,7 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
   if (RWI_refine) {
     RWI_level = pin->GetInteger("problem", "RWI_level");
     int maxlevel = pin->GetInteger("mesh", "numlevel") - 1;
-    RWI_level = std::max(maxlevel-1,RWI_level);
+    RWI_level = std::min(maxlevel-1,RWI_level);
     RWI_rmin = pin->GetReal("problem", "RWI_rmin");
     RWI_rmax = pin->GetReal("problem", "RWI_rmax");      
     RWI_rho  = pin->GetOrAddReal("problem", "RWI_rho",2.0);
@@ -806,6 +806,9 @@ void Mesh::InitUserMeshData(ParameterInput *pin) {
     bool pfix = false;
     if (n == 0) pfix = planetFix;
     PS[n].initialize(Omega0, pfix, nvel_planet); //2-vel
+    if (pfix && n == 0) {
+      pin->SetReal("orbital_advection","Omega0",Omega0);
+    }
 
     //initialize the planet softening
     Real redPot0 = softening(PS[n].getRoche(),H_disk(PS[n].getRad()),
@@ -2620,47 +2623,38 @@ void ResetDustVelPrim(MeshBlock *pmb, const AthenaArray<Real> &prim, AthenaArray
 	    //check vphi first
 	    // first get vphi in the inertial frame
 	    
-	    // Real rad,phi,z;
-	    // GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
-	    // Real vel_K = 0.0;
-	    // if (pmb->porb->orbital_advection_defined) {
-	    //   vel_K = vK(pmb->porb, pco->x1v(i), pco->x2v(j), pco->x3v(k));
-	    // }
-	    // const Real vphid = prim_df(v2_id,  k, j, i) + rad*Omega0 + vel_K;
-	    // const Real vphi  = prim(iphi, k, j, i)      + rad*Omega0 + vel_K;
+	    Real rad,phi,z;
+	    GetCylCoord(pmb->pcoord, rad, phi, z, i, j, k);
+	    Real vel_K = 0.0;
+	    if (pmb->porb->orbital_advection_defined) {
+	      vel_K = vK(pmb->porb, pco->x1v(i), pco->x2v(j), pco->x3v(k));
+	    }
+	    const Real vphid = prim_df(v2_id,  k, j, i) + rad*Omega0 + vel_K;
+	    const Real vphi  = prim(iphi, k, j, i)      + rad*Omega0 + vel_K;
 
-	    // Real vphid_new = std::min(1.1*vphi, std::max(0.9*vphi, vphid));
-	    // prim_df(v2_id,  k, j, i) = vphid_new - (rad*Omega0 + vel_K);
+	    Real vphid_new = std::min(1.15*vphi, std::max(0.85*vphi, vphid));
+	    prim_df(v2_id,  k, j, i) = vphid_new - (rad*Omega0 + vel_K);
 	    
-	    // //limit by the gas velocity vr
-	    // if (std::abs(prim_df(v1_id,  k, j, i)) > 4.0*std::abs(prim(IM1, k, j, i))) {
-	    //   //assign center of mass velocity
-	    //   Real v_cm = ((prim(IM1, k, j, i)*gas_rho +  prim_df(v1_id,  k, j, i)*dust_rho) /
-	    // 		   (gas_rho + dust_rho));
-	    //   prim_df(v1_id,  k, j, i) = v_cm;
-	    //   // prim_df(v1_id,  k, j, i) = (4.0*std::abs(prim(IM1, k, j, i))*
-	    //   // 				  (prim_df(v1_id,  k, j, i) > 0.0?1.0:-1.0));
-
-	    //   //vphi
-	    //   // Real vp_cm = ((prim(iphi, k, j, i)*gas_rho +  prim_df(v2_id,  k, j, i)*dust_rho) /
-	    //   // 		    (gas_rho + dust_rho));
-	    //   // prim_df(v2_id,  k, j, i) = vp_cm;
-	    // }
+	    //limit by the sound speed
+            const Real &gas_pre = prim(IPR, k, j, i);
+	    const Real cs2_gas = gamma_gas*gas_pre/gas_rho;
+	    if (SQR(prim_df(v1_id,  k, j, i)) > 16.0*cs2_gas) {
+	      //assign center of mass velocity
+	      // Real v_cm = ((prim(IM1, k, j, i)*gas_rho +  prim_df(v1_id,  k, j, i)*dust_rho) /
+	      // 		   (gas_rho + dust_rho));
+	      // prim_df(v1_id,  k, j, i) = v_cm;
 	      
-	    // if (vphid < 0.5*vphi || vphid > 1.5*vphi) {
-	    //   if (std::abs(prim_df(v1_id,  k, j, i)) > 4.0*std::abs(prim(IM1, k, j, i))) {
-	    // 	prim_df(v1_id,  k, j, i) = (4.0*std::abs(prim(IM1, k, j, i))*
-	    // 				    (prim_df(v1_id,  k, j, i) > 0.0?1.0:-1.0));
-	    //   }
-	    // }
-	    
-	    // //limit vphi
-	    // if (std::abs(prim_df(v2_id,  k, j, i)) > 2.0*std::abs(prim(iphi, k, j, i))) {
-	    //   prim_df(v2_id,  k, j, i) = (2.0*std::abs(prim(iphi, k, j, i))*
-	    // 				  (prim_df(v2_id,  k, j, i) > 0.0?1.0:-1.0));
-	    // }
-	    
+	      prim_df(v1_id,  k, j, i) = (4.0*std::sqrt(cs2_gas)*
+					  (prim_df(v1_id,  k, j, i) > 0.0?1.0:-1.0));
+	      
+	    }	    
 
+	    //limit vth by 8 times sound speed
+	    if (SQR(prim_df(v3_id,  k, j, i)) > 64.0*cs2_gas) {	      
+	      prim_df(v3_id,  k, j, i) = (8.0*std::sqrt(cs2_gas)*
+					  (prim_df(v3_id,  k, j, i) > 0.0?1.0:-1.0));
+	      
+	    }	    
 	  }
 	}
       }

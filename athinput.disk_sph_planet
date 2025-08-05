@@ -1,15 +1,15 @@
 <comment>
 problem   = Keplerian disk in spherical polar coordinates
 reference = 
-configure = --prob=mp_athena --coord=cylindrical --flux hlle --eos=adiabatic --ndustfluids=1 -mpi -hdf5 --hdf5_path=${HDF5_ROOT}
+configure = --prob=disk --coord=spherical-polar
 
 <job>
 problem_id  = disk      # problem ID: basename of output filenames
 
 <output1>
 file_type   = hdf5       # VTK data dump
-variable    = prim,uov0,uov1      #
-dt          = 62.831853071795862 	# 15.707963267948966     # time increment between outputs
+variable    = prim,uov0, uov1      #
+dt          =  15.707963267948966     # time increment between outputs
 
 <output2>
 file_type   = hst       # History data dump
@@ -17,12 +17,12 @@ dt          = 0.0628    # time increment between outputs
 
 <output3>
 file_type	= rst
-dt 		= 628. 
+dt 		= 78.55
 
 <time>
-cfl_number  = 0.4       # The Courant, Friedrichs, & Lewy (CFL) Number
+cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
 nlim        = -1        # cycle limit
-tlim        = 12560.      # time limit
+tlim        = 25132.741228718343      # time limit
 integrator  = rk2       # time integration algorithm
 sts_integrator = rkl1
 xorder      = 2         # order of spatial reconstruction
@@ -33,7 +33,7 @@ dt_diagnostics = -1
 <mesh>
 ##for log-grid, square mesh
 ##  Nr = ln(R_out/R_in)*Nphi/(2*pi)
-nx1         = 1536       # Number of zones in X1-direction
+nx1         = 384       # Number of zones in X1-direction
 x1min       = 0.3       # minimum value of X1
 x1max       = 5.0       # maximum value of X1
 ix1_bc      = user      # Inner-X1 boundary condition flag
@@ -41,42 +41,44 @@ ox1_bc      = user      # Outer-X1 boundary condition flag
 ## for log-grid, x1rat = (R_out/R_in)**(1./Nr)
 x1rat       = 1.0    	# non-uniform grid ratio
 
-nx3         = 1        # Number of zones in X2-direction
-x3min       = -0.5	#1.3707963267948966    # minimum value of X2
-x3max       =  0.5	#1.7707963267948966    # maximum value of X2
-ix3_bc      = reflecting      # Inner-X2 boundary condition flag
-ox3_bc      = reflecting      # Outer-X2 boundary condition flag
+nx2         = 32        # Number of zones in X2-direction
+x2min       = 1.3707963267948966    # minimum value of X2
+x2max       = 1.7707963267948966    # maximum value of X2
+ix2_bc      = reflecting      # Inner-X2 boundary condition flag
+ox2_bc      = reflecting      # Outer-X2 boundary condition flag
 
-nx2         = 2048            # Number of zones in X3-direction
-x2min       = 0.0            # minimum value of X3
-x2max       = 6.2831853071795862  # maximum value of X3
-ix2_bc      = periodic       # Inner-X3 boundary condition flag
-ox2_bc      = periodic       # Outer-X3 boundary condition flag
+nx3         = 512            # Number of zones in X3-direction
+x3min       = 0.0            # minimum value of X3
+x3max       = 6.2831853071795862  # maximum value of X3
+ix3_bc      = periodic       # Inner-X3 boundary condition flag
+ox3_bc      = periodic       # Outer-X3 boundary condition flag
 
-refinement  = none	#adaptive		#None
-#numlevel    = 4
-#derefine_count  = 10
+refinement  = static	#adaptive		#None
+numlevel    = 3
+derefine_count  = 10
 
-#<refinement1>
-#x1min = 0.93                   #-2*0.058
-#x1max = 1.07
-#x3min = -0.5	#1.5007963267948965            #-0.01*2/3
-#x3max = 0.5	#1.6407963267948966            #+0.058*2/3
-#x2min = 3.002920398719666       #-3*058
-#x2max = 3.28026490845992
-#level = 2
+<refinement1>
+x1min = 0.93                   #-2*0.058
+x1max = 1.07
+x2min = 1.5007963267948965            #-0.01*2/3
+x2max = 1.6407963267948966            #+0.058*2/3
+x3min = 3.002920398719666       #-3*058
+x3max = 3.28026490845992
+level = 2
 
-#<refinement2>
-#x1min = 1.3
-#x1max = 1.65
-#x2min = 0.0
-#x2max = 6.2831853071795862
-#level = 2   
+<refinement2>
+x1min = 1.3
+x1max = 1.6
+x2min = 1.5207963267948965
+x2max = 1.6207963267948966
+x3min = 0.0
+x3max = 6.2831853071795862
+level = 2   
 
 <meshblock>
-nx1    = 96
-nx2    = 64
-nx3    =  1
+nx1    =  8
+nx2    =  8
+nx3    =  8
 
 <hydro>
 gamma           = 1.001 # gamma = C_p/C_v
@@ -94,13 +96,23 @@ r0          = 1.0
 rho0        = 1.0
 p0_over_r0  = 0.0025
 tslope      = -1.0
-dslope      = -1.5	# sigma-power = -1.5
+dslope      = -2.5	# sigma-power = 1.5
 Isothermal_Flag = true
 mdot_flag	= false
 viscBC_flag     = false
 
+RWI_out_pv	= true
+RWI_refine	= true
+RWI_rmin	= 1.40    	# 1.3, 1.35, 1.4
+RWI_rmax	= 1.75    	# 1.53, 1.5, 1.8
+RWI_level	= 2
+RWI_refine_rho  = false
+RWI_rho		= 1.0		#2.0
+RWI_time 	= 2500.0
 
-M_DISK	    = 4.618e-4		#3D rho: 3.685e-3
+#old planet input
+
+M_DISK	    = 3.685e-3
 Damping_Flag	= false
 rindamp = 0.6
 routdamp = 2.1
@@ -114,6 +126,7 @@ i_exp_disk	= 0		# 0-no,1:(r/rc)^dslope*exp(-(r/rc)^(2+dslope))
 rc_exp_disk	= 4.0
 
 <dust>
+#dffloor		= 1e-25        	# might be different from src if used
 r0_length	= 5.2		#AU
 m_star		= 1.0		#M_SUN
 rho_p		= 1.25		#internal density of dust particle (g/cc)
@@ -125,19 +138,34 @@ Dust_SoundSpeed_Flag = true	# dust sound speed flag
 drag_method     = 1st-implicit        # The drag integratos, "explicit", "semi-implicit", "1st-implicit" or "2nd-implicit"
 openbc_flag     = false
 DustFeedback_Flag = true
+#maxStokesNum	= 1.e6
 output_stokesNum = true
 dust_alpha	 = 100.0 	# scaling dust_alpha/gas_alpha
+floor_d2g 	= 1e-6
 dust_diff_correction = true
 
 initial_D2G_1 = 1e-2            # dust-to-gas ratio
-Size_1  = 2.0                  # cm, size of the dust
-Hratio_1 = 0.8                  # scaled-height ratio to gas, used only for spherical grid
+Size_1  = 5.0                  # cm, size of the dust
+Hratio_1 = 0.5                  # scaled-height ratio to gas, used only for spherical grid
+
+initial_D2G_2 = 1e-2            # dust-to-gas ratio
+Size_2  = 0.2                  # cm, size of the dust
+Hratio_2 = 0.5                  # scaled-height ratio to gas, used only for spherical grid
+
+initial_D2G_3 = 1e-2            # dust-to-gas ratio
+Size_3  = 2.0                  # cm, size of the dust
+Hratio_3 = 0.2                  # scaled-height ratio to gas, used only for spherical grid
 
 
 <planets>
 nPlanet	= 1		# number of planets
 planetFix = true
 split_pupdate = false
+planet_temp_flag = false
+scale_ptemp = 10.0
+power_ptemp = -1.0
+times_ptemp = 5.0
+timee_ptemp = 12.0
 refine_factor = 0.6
 TIME_RLS = 1e6
 t0_planet   = 2.0                       #*2*PI
@@ -153,3 +181,4 @@ accretion_flag = true
 accretion_time = 0.0
 sink_rad 	= 0.2			# *Rh
 sink_rate	= 1.0			# *Omega(R_p)
+torq_free_flag  = false
